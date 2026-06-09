@@ -1,0 +1,76 @@
+package style
+
+import "sort"
+
+// OptionsDescriptor builds a descriptor of every option a given style accepts.
+// Tooling such as the editor uses the result to render form controls and
+// validation hints without having to introspect the style itself.
+type OptionsDescriptor struct {
+	style *Style
+}
+
+func NewOptionsDescriptor(s *Style) *OptionsDescriptor {
+	return &OptionsDescriptor{style: s}
+}
+
+// ToJSON walks the style's components and colors and assembles the field map.
+func (d *OptionsDescriptor) ToJSON() map[string]any {
+	result := map[string]any{
+		"seed":            map[string]any{"type": "string"},
+		"size":            map[string]any{"type": "number", "min": 1, "max": 4096},
+		"idRandomization": map[string]any{"type": "boolean"},
+		"title":           map[string]any{"type": "string"},
+		"flip":            map[string]any{"type": "enum", "values": []string{"none", "horizontal", "vertical", "both"}, "list": true},
+		"fontFamily":      map[string]any{"type": "string", "list": true},
+		"fontWeight":      map[string]any{"type": "number", "min": 1, "max": 1000, "list": true},
+		"scale":           map[string]any{"type": "range", "min": 0, "max": 10},
+		"borderRadius":    map[string]any{"type": "range", "min": 0, "max": 50},
+		"rotate":          rotateRangeField(),
+		"translateX":      translateRangeField(),
+		"translateY":      translateRangeField(),
+	}
+
+	for name, comp := range d.style.components {
+		if comp.IsAlias() {
+			continue
+		}
+
+		variants := make([]string, 0, len(comp.Variants()))
+		for v := range comp.Variants() {
+			variants = append(variants, v)
+		}
+		sort.Strings(variants)
+
+		result[name+"Variant"] = map[string]any{"type": "enum", "values": variants, "list": true, "weighted": true}
+		result[name+"Probability"] = map[string]any{"type": "number", "min": 0, "max": 100}
+	}
+
+	colorNames := make([]string, 0, len(d.style.colors)+1)
+	for name := range d.style.colors {
+		colorNames = append(colorNames, name)
+	}
+	sort.Strings(colorNames)
+	colorNames = append(colorNames, "background")
+
+	for _, name := range colorNames {
+		field := map[string]any{"type": "color", "list": true}
+		if cd, ok := d.style.colors[name]; ok && cd.ContrastTo != "" {
+			field["contrastTo"] = cd.ContrastTo
+		}
+
+		result[name+"Color"] = field
+		result[name+"ColorFill"] = map[string]any{"type": "enum", "values": []string{"solid", "linear", "radial"}, "list": true}
+		result[name+"ColorFillStops"] = map[string]any{"type": "range", "min": 2}
+		result[name+"ColorAngle"] = rotateRangeField()
+	}
+
+	return result
+}
+
+func rotateRangeField() map[string]any {
+	return map[string]any{"type": "range", "min": -360, "max": 360}
+}
+
+func translateRangeField() map[string]any {
+	return map[string]any{"type": "range", "min": -1000, "max": 1000}
+}

@@ -1,0 +1,366 @@
+package render
+
+import (
+	"github.com/dicebear/dicebear-go/v10/color"
+	"github.com/dicebear/dicebear-go/v10/internal/errs"
+	"github.com/dicebear/dicebear-go/v10/internal/prng"
+	"github.com/dicebear/dicebear-go/v10/internal/style"
+)
+
+// resolver derives every deterministic value for an avatar from the style, the
+// user options, and a seeded PRNG, exposing them as memoized named accessors.
+//
+// Every value the resolver picks is recorded in a snapshot (resolved), which
+// the public Avatar.JSON returns. The raw seed is deliberately excluded. The
+// PRNG is key-based and order-independent, so the snapshot doubles as the memo
+// and the only mutable state besides the colorResolving stack that detects
+// circular color references.
+type resolver struct {
+	style          *style.Style
+	options        *options
+	rng            *prng.Prng
+	colorResolving []string
+	result         map[string]any
+	order          []string
+}
+
+func newResolver(s *style.Style, opts *options) *resolver {
+	seed, _ := opts.seed()
+	return &resolver{
+		style:   s,
+		options: opts,
+		rng:     prng.New(seed),
+		result:  map[string]any{},
+	}
+}
+
+func strIdentity(s string) string { return s }
+
+// record inserts a snapshot value if the key has not been recorded yet (the
+// first write wins, mirroring the JS #memo). Insertion order is tracked so the
+// JSON envelope can emit keys in resolution order, like the JS/Rust ports.
+func (r *resolver) record(key string, value any) {
+	if _, ok := r.result[key]; !ok {
+		r.result[key] = value
+		r.order = append(r.order, key)
+	}
+}
+
+// seed is deliberately not recorded — it is the one input kept out of the
+// resolved snapshot, so a serialized avatar never leaks it.
+func (r *resolver) seed() string {
+	s, _ := r.options.seed()
+	return s
+}
+
+func (r *resolver) size() *float64 {
+	v := r.options.size()
+	if v != nil {
+		r.record("size", *v)
+	} else {
+		r.record("size", nil)
+	}
+	return v
+}
+
+func (r *resolver) idRandomization() bool {
+	v := false
+	if p := r.options.idRandomization(); p != nil {
+		v = *p
+	}
+	r.record("idRandomization", v)
+	return v
+}
+
+func (r *resolver) title() (string, bool) {
+	s, ok := r.options.title()
+	if ok {
+		r.record("title", s)
+	} else {
+		r.record("title", nil)
+	}
+	return s, ok
+}
+
+func (r *resolver) flip() string {
+	v, ok := prng.Pick(r.rng, "flip", r.options.flip(), strIdentity)
+	if !ok {
+		v = "none"
+	}
+	r.record("flip", v)
+	return v
+}
+
+func (r *resolver) fontFamily() string {
+	v, ok := prng.Pick(r.rng, "fontFamily", r.options.fontFamily(), strIdentity)
+	if !ok {
+		v = "system-ui"
+	}
+	r.record("fontFamily", v)
+	return v
+}
+
+func (r *resolver) fontWeight() float64 {
+	v, ok := prng.Pick(r.rng, "fontWeight", r.options.fontWeight(), prng.NumString)
+	if !ok {
+		v = 400
+	}
+	r.record("fontWeight", v)
+	return v
+}
+
+func (r *resolver) scale() float64 { return r.floatOpt("scale", r.options.scale(), 1) }
+func (r *resolver) borderRadius() float64 {
+	return r.floatOpt("borderRadius", r.options.borderRadius(), 0)
+}
+func (r *resolver) rotate() float64     { return r.floatOpt("rotate", r.options.rotate(), 0) }
+func (r *resolver) translateX() float64 { return r.floatOpt("translateX", r.options.translateX(), 0) }
+func (r *resolver) translateY() float64 { return r.floatOpt("translateY", r.options.translateY(), 0) }
+
+// variant selects a variant for the given component, or ("", false) when the
+// component is unknown or rolled invisible.
+func (r *resolver) variant(name string) (string, bool) {
+	v, ok := r.resolveVariant(name)
+	if ok {
+		r.record(name+"Variant", v)
+	} else {
+		r.record(name+"Variant", nil)
+	}
+	return v, ok
+}
+
+func (r *resolver) resolveVariant(name string) (string, bool) {
+	comp, ok := r.style.Components()[name]
+	if !ok {
+		return "", false
+	}
+	if !r.isVisible(name, comp) {
+		return "", false
+	}
+
+	weights := map[string]float64{}
+
+	if raw, ok := r.options.componentVariant(comp.SourceName()); ok {
+		for v, w := range raw {
+			if _, exists := comp.Variants()[v]; exists {
+				weights[v] = w
+			}
+		}
+	} else {
+		for v, variant := range comp.Variants() {
+			weights[v] = variant.WeightOr1()
+		}
+	}
+
+	return r.rng.WeightedPick(name+"Variant", weights)
+}
+
+func (r *resolver) color(name string) ([]string, error) {
+	key := name + "Color"
+
+	// Memoize like the JS #memo: a color already resolved this pass is returned
+	// from the snapshot instead of being recomputed. Without it, a graph where
+	// each color references the next via both contrastTo and notEqualTo
+	// re-resolves exponentially (a schema-valid DoS).
+	if cached, ok := r.cachedColor(key); ok {
+		return cached, nil
+	}
+
+	value, err := r.resolveColor(name)
+	if err != nil {
+		return nil, err
+	}
+	r.record(key, value)
+	return value, nil
+}
+
+func (r *resolver) cachedColor(key string) ([]string, bool) {
+	v, ok := r.result[key]
+	if !ok {
+		return nil, false
+	}
+	if arr, ok := v.([]string); ok {
+		return arr, true
+	}
+	return nil, true
+}
+
+func (r *resolver) colorFill(name string) string {
+	v, ok := prng.Pick(r.rng, name+"ColorFill", r.options.colorFill(name), strIdentity)
+	if !ok {
+		v = "solid"
+	}
+	r.record(name+"ColorFill", v)
+	return v
+}
+
+func (r *resolver) colorAngle(name string) float64 {
+	return r.floatOpt(name+"ColorAngle", r.options.colorAngle(name), 0)
+}
+
+// componentTransform returns (rotate, translateX, translateY, scale) for a
+// component, each recorded as ${name}Rotate / ${name}TranslateX / … in the
+// snapshot.
+func (r *resolver) componentTransform(name string) (rotate, translateX, translateY, scale float64) {
+	comp := r.style.Components()[name]
+
+	var rRange, sRange, txRange, tyRange *prng.Range
+	if comp != nil {
+		rRange = comp.Rotate()
+		sRange = comp.Scale()
+		txRange = comp.TranslateX()
+		tyRange = comp.TranslateY()
+	}
+
+	rotate = r.floatOpt(name+"Rotate", rRange, 0)
+	translateX = r.floatOpt(name+"TranslateX", txRange, 0)
+	translateY = r.floatOpt(name+"TranslateY", tyRange, 0)
+	scale = r.floatOpt(name+"Scale", sRange, 1)
+	return
+}
+
+// resolved returns an informational snapshot of every value the resolver
+// picked. Unset (nil) entries are filtered out; the raw seed is excluded.
+func (r *resolver) resolved() map[string]any {
+	out := make(map[string]any, len(r.result))
+	for k, v := range r.result {
+		if v != nil {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// resolvedOrder returns the snapshot keys with non-nil values in the order they
+// were first recorded, matching the JS/Rust resolution order for the JSON
+// envelope.
+func (r *resolver) resolvedOrder() []string {
+	out := make([]string, 0, len(r.order))
+	for _, k := range r.order {
+		if r.result[k] != nil {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func (r *resolver) probability(comp *style.Component) float64 {
+	if p := r.options.componentProbability(comp.SourceName()); p != nil {
+		return *p
+	}
+	return comp.Probability()
+}
+
+func (r *resolver) isVisible(name string, comp *style.Component) bool {
+	return r.rng.Bool(name+"Probability", r.probability(comp))
+}
+
+func (r *resolver) resolveColor(name string) ([]string, error) {
+	styleColor, hasStyleColor := r.style.Colors()[name]
+
+	var source []string
+	if userColors, ok := r.options.color(name); ok {
+		source = userColors
+	} else if hasStyleColor {
+		source = styleColor.Values
+	}
+
+	candidates := make([]string, len(source))
+	for i, c := range source {
+		candidates[i] = color.ToHex(c)
+	}
+
+	fill := r.colorFill(name)
+	stops := 1
+	if fill != "solid" {
+		stops = r.colorFillStops(name)
+	}
+
+	if !hasStyleColor {
+		shuffled := r.rng.Shuffle(name+"Color", candidates)
+		return takeN(shuffled, stops), nil
+	}
+
+	// Detect circular references (e.g. a.contrastTo = b, b.contrastTo = a).
+	for _, n := range r.colorResolving {
+		if n == name {
+			chain := append(append([]string{}, r.colorResolving...), name)
+			return nil, &errs.CircularColorReferenceError{Chain: chain}
+		}
+	}
+
+	r.colorResolving = append(r.colorResolving, name)
+	err := r.applyColorConstraints(styleColor, &candidates)
+	r.colorResolving = r.colorResolving[:len(r.colorResolving)-1]
+	if err != nil {
+		return nil, err
+	}
+
+	// Skip the shuffle when sorted by contrast, to preserve that ordering.
+	ordered := candidates
+	if styleColor.ContrastTo == "" {
+		ordered = r.rng.Shuffle(name+"Color", candidates)
+	}
+
+	return takeN(ordered, stops), nil
+}
+
+func (r *resolver) applyColorConstraints(styleColor style.ColorDef, candidates *[]string) error {
+	if styleColor.ContrastTo != "" {
+		refColors, err := r.color(styleColor.ContrastTo)
+		if err != nil {
+			return err
+		}
+		if len(refColors) > 0 {
+			*candidates = color.SortByContrast(*candidates, refColors[0])
+		}
+	}
+
+	if len(styleColor.NotEqualTo) > 0 {
+		var excluded []string
+		for _, ref := range styleColor.NotEqualTo {
+			cols, err := r.color(ref)
+			if err != nil {
+				return err
+			}
+			excluded = append(excluded, cols...)
+		}
+		*candidates = color.FilterNotEqualTo(*candidates, excluded)
+	}
+
+	return nil
+}
+
+func (r *resolver) colorFillStops(name string) int {
+	if rng := r.options.colorFillStops(name); rng != nil {
+		n := r.rng.Integer(name+"ColorFillStops", rng)
+		if n < 0 {
+			n = 0
+		}
+		return n
+	}
+	return 2
+}
+
+func (r *resolver) floatOpt(key string, rng *prng.Range, fallback float64) float64 {
+	value := fallback
+	if rng != nil {
+		value = r.rng.Float(key, rng)
+	}
+	r.record(key, value)
+	return value
+}
+
+// takeN returns a copy of the first n elements of s (or all of them if n is
+// larger), mirroring the JS slice(0, stops).
+func takeN(s []string, n int) []string {
+	if n > len(s) {
+		n = len(s)
+	}
+	if n < 0 {
+		n = 0
+	}
+	out := make([]string, n)
+	copy(out, s[:n])
+	return out
+}
