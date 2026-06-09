@@ -33,6 +33,7 @@ func TestAvatarParity(t *testing.T) {
 			ID              string          `json:"id"`
 			Options         map[string]any  `json:"options"`
 			SVG             string          `json:"svg"`
+			DataURI         string          `json:"dataUri"`
 			ResolvedOptions json.RawMessage `json:"resolvedOptions"`
 		}
 		readFixture(t, filepath.Join("avatars", name+".json"), &cases)
@@ -48,6 +49,14 @@ func TestAvatarParity(t *testing.T) {
 				t.Errorf("%s/%s SVG mismatch at byte %d", name, c.ID, firstDiff(got, c.SVG))
 			}
 
+			// Only select cases carry a dataUri — it pins the percent-encoding
+			// contract (JS encodeURIComponent) without bloating every fixture.
+			if c.DataURI != "" {
+				if got := avatar.DataURI(); got != c.DataURI {
+					t.Errorf("%s/%s data URI mismatch at byte %d", name, c.ID, firstDiff(got, c.DataURI))
+				}
+			}
+
 			// Deep-equal (order-independent), like the JS/PHP/Python/Rust
 			// suites. Decode with UseNumber so a JSON integer (1) and float
 			// (1.0) compare unequal — this pins whole-number options as JSON
@@ -61,6 +70,41 @@ func TestAvatarParity(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("%s/%s resolved options mismatch\n got: %s\nwant: %s", name, c.ID, gotJSON, c.ResolvedOptions)
 			}
+		}
+	}
+}
+
+// Cross-language descriptor parity: the field map every port derives from a
+// style (types, ranges, sorted variant lists, per-color fields) must deep-equal
+// the JS-generated fixture. The number-aware decode also pins whole numbers as
+// JSON integers, like the resolved-options assertion above.
+func TestDescriptorParity(t *testing.T) {
+	styleNames := []string{"initials", "thumbs", "glass", "shape-grid", "notionists"}
+
+	for _, name := range styleNames {
+		styleJSON, err := os.ReadFile(fixturePath(t, filepath.Join("styles", name+".json")))
+		if err != nil {
+			t.Fatalf("read style %s: %v", name, err)
+		}
+		style, err := NewStyle(styleJSON)
+		if err != nil {
+			t.Fatalf("parse style %s: %v", name, err)
+		}
+
+		gotJSON, err := json.Marshal(NewOptionsDescriptor(style).ToJSON())
+		if err != nil {
+			t.Fatalf("marshal descriptor %s: %v", name, err)
+		}
+
+		wantJSON, err := os.ReadFile(fixturePath(t, filepath.Join("descriptors", name+".json")))
+		if err != nil {
+			t.Fatalf("read descriptor %s: %v", name, err)
+		}
+
+		got := decodeNumberAware(t, gotJSON)
+		want := decodeNumberAware(t, wantJSON)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s descriptor mismatch\n got: %s\nwant: %s", name, gotJSON, wantJSON)
 		}
 	}
 }

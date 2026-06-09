@@ -2,10 +2,12 @@ package dicebear
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/dicebear/dicebear-go/v10/color"
 	"github.com/dicebear/dicebear-go/v10/internal/initials"
 	"github.com/dicebear/dicebear-go/v10/internal/num"
 	"github.com/dicebear/dicebear-go/v10/internal/prng"
@@ -200,6 +202,152 @@ func TestInitialsParity(t *testing.T) {
 	for _, c := range cases {
 		if got := initials.FromSeed(c.Seed); got != c.Result {
 			t.Errorf("initials.FromSeed(%q) = %q, want %q", c.Seed, got, c.Result)
+		}
+	}
+}
+
+func TestColorParity(t *testing.T) {
+	var f struct {
+		ToHex []struct {
+			Input  string `json:"input"`
+			Result string `json:"result"`
+		} `json:"toHex"`
+		ToRGBHex []struct {
+			Input  string `json:"input"`
+			Result string `json:"result"`
+		} `json:"toRgbHex"`
+		ParseHex []struct {
+			Input  string  `json:"input"`
+			Result []uint8 `json:"result"`
+		} `json:"parseHex"`
+		Luminance []struct {
+			Input  string  `json:"input"`
+			Result float64 `json:"result"`
+		} `json:"luminance"`
+		SortByContrast []struct {
+			Candidates []string `json:"candidates"`
+			RefColor   string   `json:"refColor"`
+			Result     []string `json:"result"`
+		} `json:"sortByContrast"`
+		FilterNotEqualTo []struct {
+			Candidates []string `json:"candidates"`
+			Excluded   []string `json:"excluded"`
+			Result     []string `json:"result"`
+		} `json:"filterNotEqualTo"`
+	}
+	readFixture(t, "colors.json", &f)
+
+	for _, c := range f.ToHex {
+		if got := color.ToHex(c.Input); got != c.Result {
+			t.Errorf("ToHex(%q) = %q, want %q", c.Input, got, c.Result)
+		}
+	}
+
+	for _, c := range f.ToRGBHex {
+		if got := color.ToRGBHex(c.Input); got != c.Result {
+			t.Errorf("ToRGBHex(%q) = %q, want %q", c.Input, got, c.Result)
+		}
+	}
+
+	for _, c := range f.ParseHex {
+		r, g, b := color.ParseHex(c.Input)
+		if r != c.Result[0] || g != c.Result[1] || b != c.Result[2] {
+			t.Errorf("ParseHex(%q) = (%d, %d, %d), want %v", c.Input, r, g, b, c.Result)
+		}
+	}
+
+	for _, c := range f.Luminance {
+		if got := color.Luminance(c.Input); got != c.Result {
+			t.Errorf("Luminance(%q) = %v, want %v", c.Input, got, c.Result)
+		}
+	}
+
+	for _, c := range f.SortByContrast {
+		if got := color.SortByContrast(c.Candidates, c.RefColor); !equalStrings(got, c.Result) {
+			t.Errorf("SortByContrast(%v, %q) = %v, want %v", c.Candidates, c.RefColor, got, c.Result)
+		}
+	}
+
+	for _, c := range f.FilterNotEqualTo {
+		if got := color.FilterNotEqualTo(c.Candidates, c.Excluded); !equalStrings(got, c.Result) {
+			t.Errorf("FilterNotEqualTo(%v, %v) = %v, want %v", c.Candidates, c.Excluded, got, c.Result)
+		}
+	}
+}
+
+// Cross-language validation parity: every port must accept and reject the same
+// inputs (error messages are language-specific and not compared). The circular
+// color reference cases additionally pin the reported chain.
+func TestValidationParity(t *testing.T) {
+	var f struct {
+		Styles []struct {
+			ID         string          `json:"id"`
+			Definition json.RawMessage `json:"definition"`
+			Valid      bool            `json:"valid"`
+		} `json:"styles"`
+		Options []struct {
+			ID      string         `json:"id"`
+			Options map[string]any `json:"options"`
+			Valid   bool           `json:"valid"`
+		} `json:"options"`
+		CircularColors []struct {
+			ID      string          `json:"id"`
+			Style   json.RawMessage `json:"style"`
+			Options map[string]any  `json:"options"`
+			Chain   []string        `json:"chain"`
+		} `json:"circularColors"`
+	}
+	readFixture(t, "validation.json", &f)
+
+	var minimal *Style
+	for _, c := range f.Styles {
+		s, err := NewStyle(c.Definition)
+		if c.Valid != (err == nil) {
+			t.Errorf("style %s: err = %v, want valid = %v", c.ID, err, c.Valid)
+			continue
+		}
+		if !c.Valid {
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Errorf("style %s: error %T is not a *ValidationError", c.ID, err)
+			}
+		}
+		if c.ID == "minimal" {
+			minimal = s
+		}
+	}
+	if minimal == nil {
+		t.Fatal("minimal style fixture missing or invalid")
+	}
+
+	for _, c := range f.Options {
+		_, err := NewAvatar(minimal, c.Options)
+		if c.Valid != (err == nil) {
+			t.Errorf("options %s: err = %v, want valid = %v", c.ID, err, c.Valid)
+			continue
+		}
+		if !c.Valid {
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Errorf("options %s: error %T is not a *ValidationError", c.ID, err)
+			}
+		}
+	}
+
+	for _, c := range f.CircularColors {
+		style, err := NewStyle(c.Style)
+		if err != nil {
+			t.Errorf("circular %s: style must parse: %v", c.ID, err)
+			continue
+		}
+		_, err = NewAvatar(style, c.Options)
+		var ce *CircularColorReferenceError
+		if !errors.As(err, &ce) {
+			t.Errorf("circular %s: err = %v, want *CircularColorReferenceError", c.ID, err)
+			continue
+		}
+		if !equalStrings(ce.Chain, c.Chain) {
+			t.Errorf("circular %s: chain = %v, want %v", c.ID, ce.Chain, c.Chain)
 		}
 	}
 }
