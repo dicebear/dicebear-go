@@ -21,75 +21,32 @@ Requires Go 1.23 or newer.
 ## Usage
 
 ```go
-package main
-
 import (
-	"fmt"
-
 	dicebear "github.com/dicebear/dicebear-go/v10"
 	"github.com/dicebear/styles/v10"
 )
 
-func main() {
-	// From a style definition (raw JSON, e.g. the pure-data styles module)
-	style, err := dicebear.NewStyle([]byte(styles.Lorelei))
-	if err != nil {
-		panic(err)
-	}
+// From a style definition (raw JSON, e.g. the pure-data styles module)
+style, _ := dicebear.NewStyle([]byte(styles.Lorelei))
 
-	avatar, err := dicebear.NewAvatar(style, map[string]any{
-		"seed": "John Doe",
-		"size": 128,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(avatar.SVG())     // SVG string
-	fmt.Println(avatar.DataURI()) // data:image/svg+xml;charset=utf-8,...
-}
-```
-
-### With options
-
-```go
-avatar, err := dicebear.NewAvatar(style, map[string]any{
-	"seed":                "Jane",
-	"size":                64,
-	"flip":                "horizontal",
-	"backgroundColor":     []string{"#0077b6", "#00b4d8"},
-	"backgroundColorFill": "linear",
-	"scale":               []float64{0.8, 1.0},
-	"borderRadius":        10,
+avatar, _ := dicebear.NewAvatar(style, map[string]any{
+	"seed": "John Doe",
+	"size": 128,
 })
+
+avatar.SVG()     // SVG string
+avatar.DataURI() // data:image/svg+xml;charset=utf-8,...
 ```
 
-### Inspecting a style
+### Using the Style type
 
 ```go
-style, err := dicebear.NewStyle(definitionJSON)
-if err != nil {
-	panic(err)
-}
-
-// Inspect the available options for a style
-descriptor := dicebear.NewOptionsDescriptor(style).ToJSON()
+style, _ := dicebear.NewStyle([]byte(styles.Lorelei))
 
 // Create multiple avatars from the same style
-alice, _ := dicebear.NewAvatar(style, map[string]any{"seed": "Alice"})
-bob, _ := dicebear.NewAvatar(style, map[string]any{"seed": "Bob"})
+avatar1, _ := dicebear.NewAvatar(style, map[string]any{"seed": "Alice"})
+avatar2, _ := dicebear.NewAvatar(style, map[string]any{"seed": "Bob"})
 ```
-
-The style definitions ship as the pure-data
-[`github.com/dicebear/styles/v10`](https://pkg.go.dev/github.com/dicebear/styles/v10)
-module; the two draft-07 JSON Schemas come from
-[`github.com/dicebear/schema`](https://pkg.go.dev/github.com/dicebear/schema).
-Color helpers live in the `github.com/dicebear/dicebear-go/v10/color`
-sub-package.
-
-## License
-
-The source code of DiceBear is released under the **MIT License**.
 
 ## Sponsors
 
