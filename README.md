@@ -5,7 +5,7 @@ avatars from style definitions and a seed string.
 
 DiceBear is available for multiple languages. All implementations share the same
 PRNG and rendering pipeline, producing identical SVG output for the same seed,
-style, and options — regardless of the language used.
+style, and options, regardless of the language used.
 
 [Playground](https://www.dicebear.com/playground) |
 [Documentation](https://www.dicebear.com/how-to-use/go-library/)
