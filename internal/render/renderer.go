@@ -59,8 +59,8 @@ func (r *renderer) render() (string, error) {
 	}
 
 	// Resolve size before title and the root attributes so the resolver memo
-	// records the keys in the same order as the JS/PHP/Python ports — the JSON
-	// envelope emits the resolved options in first-recorded order.
+	// records the keys in the same order as the other ports — the JSON envelope
+	// emits the resolved options in first-recorded order.
 	size := r.resolver.size()
 
 	var escapedTitle *string

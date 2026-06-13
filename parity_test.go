@@ -15,7 +15,7 @@ import (
 
 // Cross-language parity: assert the primitives produce exactly the values in the
 // shared fixtures under <repo>/tests/fixtures/parity/, the same the JS, PHP,
-// Python and Rust suites run against. The tests skip gracefully when the
+// Python, Rust and Dart suites run against. The tests skip gracefully when the
 // fixtures are absent (e.g. in the split dicebear-go repo).
 
 func fixturePath(t *testing.T, name string) string {
