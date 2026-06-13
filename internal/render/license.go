@@ -7,8 +7,9 @@ import (
 )
 
 // Builds attribution strings and embedded RDF/Dublin Core metadata from a
-// style's meta block. Mirrors the JS, PHP, Python and Rust ports, including the
-// nullish creator fallback and the empty-string-as-absent treatment.
+// style's meta block. Mirrors the JS, PHP, Python, Rust and Dart ports,
+// including the nullish creator fallback and the empty-string-as-absent
+// treatment.
 
 // nonEmptyPtr returns (value, true) only when p is non-nil and non-empty,
 // mirroring the JS falsy checks (`!sourceName` is true for both a missing field

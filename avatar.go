@@ -58,8 +58,8 @@ func (a *Avatar) ResolvedOptions() map[string]any {
 // render it — as JSON bytes.
 //
 // It is built by hand rather than via json.Marshal for byte parity with the
-// JS/PHP/Rust ports: those keep the resolved options in resolution order and do
-// not HTML-escape the SVG, whereas json.Marshal would sort the map keys
+// other ports: those keep the resolved options in resolution order and do not
+// HTML-escape the SVG, whereas json.Marshal would sort the map keys
 // alphabetically and escape <, > and & in the embedded markup.
 func (a *Avatar) JSON() ([]byte, error) {
 	var b bytes.Buffer
