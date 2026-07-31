@@ -22,6 +22,7 @@ type resolver struct {
 	colorResolving []string
 	result         map[string]any
 	order          []string
+	tags           *tagFilter
 }
 
 func newResolver(s *style.Style, opts *options) *resolver {
@@ -138,21 +139,188 @@ func (r *resolver) resolveVariant(name string) (string, bool) {
 		return "", false
 	}
 
+	return r.rng.WeightedPick(name+"Variant", r.variantWeights(comp))
+}
+
+// variantWeights builds the name → weight map the PRNG draws a variant from. The
+// per-component ${name}Variant option is more specific than the global tags
+// filter, so it takes precedence: when set, it fully governs the component's pool
+// (its named variants, weighted by the option) and the tags filter is ignored for
+// that component. The tags filter applies only where the user gave no explicit
+// ${name}Variant, and falls back to every variant when neither is set. Names the
+// style does not define are dropped, and an empty ${name}Variant (or an empty tag
+// result) yields no variant.
+func (r *resolver) variantWeights(comp *style.Component) map[string]float64 {
+	variants := comp.Variants()
+	named, hasNamed := r.options.componentVariant(comp.SourceName())
 	weights := map[string]float64{}
 
-	if raw, ok := r.options.componentVariant(comp.SourceName()); ok {
-		for v, w := range raw {
-			if _, exists := comp.Variants()[v]; exists {
+	if hasNamed {
+		for v, w := range named {
+			if _, exists := variants[v]; exists {
 				weights[v] = w
 			}
 		}
-	} else {
-		for v, variant := range comp.Variants() {
-			weights[v] = variant.WeightOr1()
+		return weights
+	}
+
+	if len(r.options.tags()) > 0 {
+		for _, v := range r.tagFilteredNames(variants) {
+			weights[v] = variants[v].WeightOr1()
+		}
+		return weights
+	}
+
+	for v, variant := range variants {
+		weights[v] = variant.WeightOr1()
+	}
+	return weights
+}
+
+type tagAllow struct {
+	category string
+	values   []string
+}
+
+type tagDisallow struct {
+	category string
+	value    string
+	hasValue bool
+}
+
+// tagFilter holds the parsed options.tags tokens grouped by role. bareDisallows
+// is the subset of disallows carrying no value, kept as a lookup set for the
+// per-component narrowing.
+type tagFilter struct {
+	allowGroups   []*tagAllow
+	bares         []string
+	disallows     []tagDisallow
+	bareDisallows map[string]bool
+}
+
+// tagFilter classifies the parsed options.tags tokens into the allow groups,
+// bare requirements and disallows the filter is composed from. The result
+// depends only on the options, never on a component, so it is computed once per
+// avatar rather than rebuilt for each of a style's components.
+func (r *resolver) tagFilter() *tagFilter {
+	if r.tags != nil {
+		return r.tags
+	}
+
+	f := &tagFilter{bareDisallows: map[string]bool{}}
+	allowIndex := map[string]*tagAllow{}
+	bareSeen := map[string]bool{}
+
+	for _, tok := range r.options.tags() {
+		if tok.negated {
+			f.disallows = append(f.disallows, tagDisallow{category: tok.category, value: tok.value, hasValue: tok.hasValue})
+			if !tok.hasValue {
+				f.bareDisallows[tok.category] = true
+			}
+		} else if tok.hasValue {
+			grp, ok := allowIndex[tok.category]
+			if !ok {
+				grp = &tagAllow{category: tok.category}
+				allowIndex[tok.category] = grp
+				f.allowGroups = append(f.allowGroups, grp)
+			}
+			grp.values = append(grp.values, tok.value)
+		} else if !bareSeen[tok.category] {
+			bareSeen[tok.category] = true
+			f.bares = append(f.bares, tok.category)
 		}
 	}
 
-	return r.rng.WeightedPick(name+"Variant", weights)
+	r.tags = f
+
+	return f
+}
+
+// tagFilteredNames narrows a component's variants to the names satisfying the
+// global tags filter, applying the parsed options.tags tokens in one pass over
+// the pool:
+//
+//   - A positive cat:value token is an axis-scoped allow. Within each category
+//     some allow mentions, a variant is kept only if it carries no tag in that
+//     category (untouched) or matches one of the allowed values (OR within the
+//     category). Distinct allowed categories combine with AND, and a category no
+//     allow mentions is left unconstrained.
+//   - A bare positive cat token requires the category: it drops variants that
+//     carry no tag in cat. It only binds where the category is in use — a
+//     component with no cat tag on any variant is left untouched, so animation
+//     turns on a style's opt-in animation without erasing the components that
+//     know nothing about it.
+//   - A negative !cat / !cat:value token disallows, dropping every variant
+//     carrying any tag in cat (bare) or the exact cat:value tag. Disallows are
+//     checked alongside allows but always win.
+//
+// The result order is irrelevant: WeightedPick sorts the names internally.
+func (r *resolver) tagFilteredNames(variants map[string]style.ComponentVariant) []string {
+	f := r.tagFilter()
+	allowGroups, bares, disallows := f.allowGroups, f.bares, f.disallows
+
+	// A bare token only binds where its category is in use, so this narrowing —
+	// unlike the classification — is genuinely per-component.
+	var required []string
+	for _, category := range bares {
+		if f.bareDisallows[category] {
+			continue
+		}
+		for _, variant := range variants {
+			if variant.HasTag(category, "", false) {
+				required = append(required, category)
+				break
+			}
+		}
+	}
+
+	var names []string
+	for name, variant := range variants {
+		allowed := true
+		for _, category := range required {
+			if !variant.HasTag(category, "", false) {
+				allowed = false
+				break
+			}
+		}
+		if !allowed {
+			continue
+		}
+
+		for _, grp := range allowGroups {
+			if !variant.HasTag(grp.category, "", false) {
+				continue
+			}
+			matched := false
+			for _, value := range grp.values {
+				if variant.HasTag(grp.category, value, true) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				allowed = false
+				break
+			}
+		}
+		if !allowed {
+			continue
+		}
+
+		disallowed := false
+		for _, ex := range disallows {
+			if variant.HasTag(ex.category, ex.value, ex.hasValue) {
+				disallowed = true
+				break
+			}
+		}
+
+		if !disallowed {
+			names = append(names, name)
+		}
+	}
+
+	return names
 }
 
 func (r *resolver) color(name string) ([]string, error) {
