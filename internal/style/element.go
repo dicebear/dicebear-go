@@ -10,12 +10,11 @@ import (
 // definition. The same node type covers SVG elements, text, and component
 // references — Type discriminates between them.
 type Element struct {
-	Type       string      `json:"type"`
-	Name       *string     `json:"name"`
-	Value      *DynValue   `json:"value"`
-	Attributes AttrList    `json:"attributes"`
-	Animations []Animation `json:"animations"`
-	Children   []Element   `json:"children"`
+	Type       string    `json:"type"`
+	Name       *string   `json:"name"`
+	Value      *DynValue `json:"value"`
+	Attributes AttrList  `json:"attributes"`
+	Children   []Element `json:"children"`
 }
 
 // DynValue is an attribute or element value: a literal string, or a typed
@@ -136,29 +135,6 @@ func (a *AttrList) Get(key string) (DynValue, bool) {
 		}
 	}
 	return DynValue{}, false
-}
-
-// Without returns a copy of the attribute list with key removed, keeping the
-// order of the remaining attributes.
-func (a AttrList) Without(key string) AttrList {
-	out := AttrList{entries: make([]Attr, 0, len(a.entries))}
-	for _, e := range a.entries {
-		if e.Key != key {
-			out.entries = append(out.entries, e)
-		}
-	}
-	return out
-}
-
-// Only returns a list holding just the attribute for key, or an empty list
-// when the attribute is absent.
-func (a AttrList) Only(key string) AttrList {
-	for _, e := range a.entries {
-		if e.Key == key {
-			return AttrList{entries: []Attr{e}}
-		}
-	}
-	return AttrList{}
 }
 
 // WithTransform returns a copy of the attribute list with the transform
