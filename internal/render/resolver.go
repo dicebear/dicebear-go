@@ -1,12 +1,10 @@
 package render
 
 import (
-	"sort"
-
-	"github.com/dicebear/dicebear-go/v10/color"
-	"github.com/dicebear/dicebear-go/v10/internal/errs"
-	"github.com/dicebear/dicebear-go/v10/internal/prng"
-	"github.com/dicebear/dicebear-go/v10/internal/style"
+	"github.com/dicebear/dicebear-go/v11/color"
+	"github.com/dicebear/dicebear-go/v11/internal/errs"
+	"github.com/dicebear/dicebear-go/v11/internal/prng"
+	"github.com/dicebear/dicebear-go/v11/internal/style"
 )
 
 // resolver derives every deterministic value for an avatar from the style, the
@@ -75,27 +73,81 @@ func (r *resolver) idRandomization() bool {
 	return v
 }
 
-// animation is deliberately PRNG-free — whether and what animates must not
-// depend on the seed. The snapshot records the raw normalized value (the
-// boolean switch, or the name list in user order). The returned selection is
-// the interpreted view the renderer works with: true plays every timeline, a
-// name list only the timelines carrying one of those names.
-func (r *resolver) animation() animationSelection {
-	raw, ok := r.options.animation()
-	if !ok {
-		raw = false
+// animation returns the global animation switch, recorded under `animation`,
+// default false. Deliberately without PRNG involvement: whether an avatar
+// animates must not depend on the seed.
+func (r *resolver) animation() bool {
+	v := false
+	if p := r.options.animation(); p != nil {
+		v = *p
 	}
-	r.record("animation", raw)
+	r.record("animation", v)
+	return v
+}
 
-	if names, isList := raw.([]string); isList {
-		return animationSelection{names: names}
+// animationPlays reports whether one timeline plays. A named timeline follows
+// its ${name}Animation switch when the user set one, recorded under that key,
+// and the global switch otherwise. Unnamed timelines (name is "") always
+// follow the global switch. The switch is read only when asked for, so a name
+// the style does not carry leaves nothing in the snapshot.
+func (r *resolver) animationPlays(name string) bool {
+	if name == "" {
+		return r.animation()
 	}
-	all, _ := raw.(bool)
-	return animationSelection{all: all}
+
+	v, ok := r.options.animationFor(name)
+	if !ok {
+		return r.animation()
+	}
+
+	r.record(name+"Animation", v)
+	return v
 }
 
 func (r *resolver) animationSpeed() float64 {
 	return r.floatOpt("animationSpeed", r.options.animationSpeed(), 1)
+}
+
+// animationSpeedFor returns the speed factor of one timeline. A named
+// timeline plays at its ${name}AnimationSpeed option when the user set one,
+// drawn under that key, and at the global factor otherwise. Unnamed timelines
+// (name is "") always follow the global factor. The option is resolved only
+// when asked for, so a name the style does not carry leaves nothing in the
+// snapshot.
+func (r *resolver) animationSpeedFor(name string) float64 {
+	if name == "" {
+		return r.animationSpeed()
+	}
+
+	rng := r.options.animationSpeedFor(name)
+	if rng == nil {
+		return r.animationSpeed()
+	}
+
+	return r.floatOpt(name+"AnimationSpeed", rng, 1)
+}
+
+// animationDelay returns the start offset in seconds shared by every
+// timeline, drawn under `animationDelay`, default 0.
+func (r *resolver) animationDelay() float64 {
+	return r.floatOpt("animationDelay", r.options.animationDelay(), 0)
+}
+
+// animationDelayFor returns the start offset of one timeline. A named
+// timeline uses its ${name}AnimationDelay option when the user set one, drawn
+// under that key, and the global offset otherwise. Unnamed timelines (name is
+// "") always follow the global offset. Mirrors animationSpeedFor.
+func (r *resolver) animationDelayFor(name string) float64 {
+	if name == "" {
+		return r.animationDelay()
+	}
+
+	rng := r.options.animationDelayFor(name)
+	if rng == nil {
+		return r.animationDelay()
+	}
+
+	return r.floatOpt(name+"AnimationDelay", rng, 0)
 }
 
 func (r *resolver) title() (string, bool) {
@@ -464,12 +516,11 @@ func (r *resolver) isVisible(name string, comp *style.Component) bool {
 // are detected via the colorResolving stack and reported as a
 // CircularColorReferenceError.
 //
-// A user-set ${name}ColorOrder: "fixed" pins user-supplied colors to their
-// verbatim order: the shuffle and the contrast sort are skipped (notEqualTo
-// filtering still applies), and the gradient stop count defaults to the number
-// of supplied colors instead of 2. A style palette carries no order contract,
-// so with "fixed" it is still deduplicated, code-point sorted, and contrast
-// sorted; only the shuffle is skipped.
+// A user-set ${name}ColorOrder: "fixed" pins the candidates to their given
+// order, whether they come from the ${name}Color option or from the style's
+// palette: the shuffle and the contrast sort are skipped (notEqualTo filtering
+// still applies), and the gradient stop count defaults to the number of
+// candidates instead of 2.
 func (r *resolver) resolveColor(name string) ([]string, error) {
 	styleColor, hasStyleColor := r.style.Colors()[name]
 
@@ -487,19 +538,18 @@ func (r *resolver) resolveColor(name string) ([]string, error) {
 	}
 
 	fixed := r.colorOrder(name) == style.ColorOrderFixed
-	verbatim := hasUserColors && fixed
 	fill := r.colorFill(name)
 	stops := 1
 	if fill != "solid" {
 		fallback := 2
-		if verbatim {
+		if fixed {
 			fallback = len(candidates)
 		}
 		stops = r.colorFillStops(name, fallback)
 	}
 
 	if !hasStyleColor {
-		return takeN(r.orderColors(name, candidates, fixed, verbatim), stops), nil
+		return takeN(r.orderColors(name, candidates, fixed), stops), nil
 	}
 
 	// Detect circular references (e.g. a.contrastTo = b, b.contrastTo = a).
@@ -511,7 +561,7 @@ func (r *resolver) resolveColor(name string) ([]string, error) {
 	}
 
 	r.colorResolving = append(r.colorResolving, name)
-	err := r.applyColorConstraints(styleColor, &candidates, verbatim)
+	err := r.applyColorConstraints(styleColor, &candidates, fixed)
 	r.colorResolving = r.colorResolving[:len(r.colorResolving)-1]
 	if err != nil {
 		return nil, err
@@ -520,44 +570,24 @@ func (r *resolver) resolveColor(name string) ([]string, error) {
 	// Skip the shuffle when sorted by contrast, to preserve that ordering.
 	ordered := candidates
 	if styleColor.ContrastTo == "" {
-		ordered = r.orderColors(name, candidates, fixed, verbatim)
+		ordered = r.orderColors(name, candidates, fixed)
 	}
 
 	return takeN(ordered, stops), nil
 }
 
 // orderColors applies ${name}ColorOrder to the candidate list. "random"
-// shuffles via the PRNG. "fixed" skips the shuffle: user-supplied colors
-// (verbatim) keep exactly the given order, while a style palette is still
-// deduplicated and sorted by UTF-16 code units, matching the canonicalization
-// the shuffle applies before drawing. The candidates are normalized hex
-// strings, so Go's byte order equals the UTF-16 code unit order here.
-func (r *resolver) orderColors(name string, candidates []string, fixed, verbatim bool) []string {
-	if !fixed {
-		return r.rng.Shuffle(name+"Color", candidates)
-	}
-
-	if verbatim {
+// shuffles via the PRNG, "fixed" keeps the candidates as given, duplicates
+// included.
+func (r *resolver) orderColors(name string, candidates []string, fixed bool) []string {
+	if fixed {
 		return candidates
 	}
-
-	// Deprecated: DiceBear 11 will take the palette in its definition order
-	// here, the same verbatim rule as user-supplied colors, and drop this
-	// sort (see CHANGELOG.md, "Deprecated").
-	seen := make(map[string]struct{}, len(candidates))
-	unique := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		if _, ok := seen[c]; !ok {
-			seen[c] = struct{}{}
-			unique = append(unique, c)
-		}
-	}
-	sort.Strings(unique)
-	return unique
+	return r.rng.Shuffle(name+"Color", candidates)
 }
 
-func (r *resolver) applyColorConstraints(styleColor style.ColorDef, candidates *[]string, verbatim bool) error {
-	if styleColor.ContrastTo != "" && !verbatim {
+func (r *resolver) applyColorConstraints(styleColor style.ColorDef, candidates *[]string, fixed bool) error {
+	if styleColor.ContrastTo != "" && !fixed {
 		refColors, err := r.color(styleColor.ContrastTo)
 		if err != nil {
 			return err
