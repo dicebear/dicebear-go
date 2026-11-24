@@ -5,9 +5,10 @@ package validate
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 
-	"github.com/dicebear/schema/v2"
+	"github.com/dicebear/schema/v3"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/dicebear/dicebear-go/v11/internal/errs"
@@ -17,7 +18,7 @@ import (
 // would be resolved against the process working directory, leaking the
 // consumer's filesystem paths into validation error messages. Keep the
 // version in sync with the github.com/dicebear/schema dependency in go.mod.
-const schemaBaseURL = "https://cdn.hopjs.net/npm/@dicebear/schema@2.0.1/dist/"
+const schemaBaseURL = "https://cdn.hopjs.net/npm/@dicebear/schema@3.0.0-rc.1/dist/"
 
 var definitionValidator = sync.OnceValue(func() *jsonschema.Schema {
 	return compileSchema(schemaBaseURL+"definition.min.json", schema.Definition)
@@ -56,7 +57,21 @@ func Options(instanceJSON []byte) error {
 	return check(optionsValidator(), instanceJSON, "options")
 }
 
+// MaxDepth is how many levels of objects and arrays a style definition or the
+// options may nest, counting the value itself as the first. Every port turns
+// down a deeper value as invalid, so a definition renders in all of them or in
+// none. Valid options nest two levels and the deepest style definition uses
+// less than a quarter of the limit.
+const MaxDepth = 64
+
 func check(sch *jsonschema.Schema, instanceJSON []byte, subject string) error {
+	if exceedsMaxDepth(instanceJSON) {
+		return &errs.ValidationError{
+			Subject: subject,
+			Details: []string{fmt.Sprintf("nesting is deeper than the %d levels this port reads", MaxDepth)},
+		}
+	}
+
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(instanceJSON))
 	if err != nil {
 		return &errs.ValidationError{Subject: subject, Details: []string{err.Error()}}
@@ -67,4 +82,39 @@ func check(sch *jsonschema.Schema, instanceJSON []byte, subject string) error {
 	}
 
 	return nil
+}
+
+// exceedsMaxDepth reports whether the JSON text nests objects and arrays
+// deeper than MaxDepth levels. It counts brackets outside strings, which is
+// the nesting the decoder would build. Text that is not valid JSON is left to
+// the decoder to report.
+func exceedsMaxDepth(instanceJSON []byte) bool {
+	depth := 0
+	inString := false
+	escaped := false
+
+	for _, b := range instanceJSON {
+		switch {
+		case escaped:
+			escaped = false
+		case inString:
+			switch b {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+		case b == '"':
+			inString = true
+		case b == '[' || b == '{':
+			depth++
+			if depth > MaxDepth {
+				return true
+			}
+		case b == ']' || b == '}':
+			depth--
+		}
+	}
+
+	return false
 }
