@@ -1,7 +1,7 @@
 <h1><img src="https://www.dicebear.com/logo-readme.svg" width="28" /> DiceBear Core (Go)</h1>
 
 [![stars](https://www.dicebear.com/badges/stars.svg)](https://github.com/dicebear/dicebear/stargazers)
-[![license](https://www.dicebear.com/badges/license.svg)](https://github.com/dicebear/dicebear/blob/10.x/LICENSE)
+[![license](https://www.dicebear.com/badges/license.svg)](https://github.com/dicebear/dicebear/blob/11.x/LICENSE)
 
 Go implementation of the DiceBear avatar library. Generates deterministic SVG
 avatars from style definitions and a seed string.
@@ -17,6 +17,7 @@ style, and options, regardless of the language used.
 
 ```sh
 go get github.com/dicebear/dicebear-go/v11
+go get github.com/dicebear/styles/v11
 ```
 
 Requires Go 1.23 or newer.
@@ -26,7 +27,7 @@ Requires Go 1.23 or newer.
 ```go
 import (
 	dicebear "github.com/dicebear/dicebear-go/v11"
-	"github.com/dicebear/styles/v10"
+	"github.com/dicebear/styles/v11"
 )
 
 // From a style definition (raw JSON, e.g. the pure-data styles module)
